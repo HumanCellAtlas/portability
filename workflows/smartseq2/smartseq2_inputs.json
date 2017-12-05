@@ -1,0 +1,12 @@
+{
+  "Ss2RsemSingleSample.output_prefix": "SRR1294876",  
+  "Ss2RsemSingleSample.fastq_read1": "https://s3.amazonaws.com/mk-hca-portability-data/SRR1294876_10000_1.fastq.gz",
+  "Ss2RsemSingleSample.fastq_read2": "https://s3.amazonaws.com/mk-hca-portability-data/SRR1294876_10000_2.fastq.gz",
+  "Ss2RsemSingleSample.gtf": "https://s3.amazonaws.com/mk-hca-portability-data/gencodev19_chr21.gtf",
+  "Ss2RsemSingleSample.ref_fasta": "https://s3.amazonaws.com/mk-hca-portability-data/chr21.fa",
+  "Ss2RsemSingleSample.ref_flat": "https://s3.amazonaws.com/mk-hca-portability-data/refFlat.chr21.txt",
+  "Ss2RsemSingleSample.rrna_interval": "https://s3.amazonaws.com/mk-hca-portability-data/hg19.chr21.rRNA.interval_list",
+  "Ss2RsemSingleSample.star_genome": "https://s3.amazonaws.com/mk-hca-portability-data/star.tar",
+  "Ss2RsemSingleSample.rsem_genome": "https://s3.amazonaws.com/mk-hca-portability-data/rsem.tar",
+  "Ss2RsemSingleSample.expected_aln_metrics_hash": "abc123"
+}
