@@ -1,0 +1,446 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Description": "Service that runs WDLs on a single EC2 instance using cromwell with a local backend.",
+    "Parameters": {
+        "LambdaCodeBucket": {
+            "Type": "String",
+            "Description": "S3 bucket with zip files containing code for the lambda functions."
+        },
+        "LambdaWorkflowCode": {
+            "Type": "String",
+            "Description": "Path within the Lambda code S3 bucket to the zip file with the handlers for /workflows endpoints."
+        },
+        "InstanceType": {
+            "Type": "String",
+            "Description": "Instance type used for running Cromwell.",
+            "Default": "t2.medium",
+            "AllowedValues": ["t2.small", "t2.medium", "t2.large", "r4.large"]
+        },
+        "VolumeSize": {
+            "Type": "Number",
+            "Description": "Size in GBs of disk for instance running Cromwell",
+            "Default": "25",
+            "MinValue": 8,
+            "MaxValue": 250
+        }
+    },
+    "Resources": {
+        "EventTable": {
+            "Type": "AWS::DynamoDB::Table",
+            "Properties": {
+                "TableName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "event-table"]]},
+                "AttributeDefinitions": [
+                    {
+                        "AttributeName": "JobId",
+                        "AttributeType": "S"
+                    },
+                    {
+                        "AttributeName": "EventId",
+                        "AttributeType": "S"
+                    }
+                ],
+                "KeySchema": [
+                    {
+                        "AttributeName": "JobId",
+                        "KeyType": "HASH"
+                    },
+                    {
+                        "AttributeName": "EventId",
+                        "KeyType": "RANGE"
+                    }
+                ],
+                "ProvisionedThroughput": {
+                    "ReadCapacityUnits": "3",
+                    "WriteCapacityUnits": "3"
+                }
+            }
+        },
+        "EC2CromwellRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "db-write-role"]]},
+                "AssumeRolePolicyDocument": {
+                    "Version" : "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["ec2.amazonaws.com"]
+                        },
+                        "Action": [ "sts:AssumeRole" ]
+                    } ]
+                },
+                "Path": "/"
+            }
+        },
+        "EventTableWritePolicy": {
+            "Type": "AWS::IAM::Policy",
+            "Properties": {
+                "PolicyName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "db-write-policy"]]},
+                "Roles": [{"Ref": "EC2CromwellRole"}],
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Action": [
+                            "dynamodb:BatchWriteItem",
+                            "dynamodb:PutItem",
+                            "dynamodb:DescribeTable",
+                            "dynamodb:GetItem",
+                            "dynamodb:Scan",
+                            "dynamodb:Query",
+                            "dynamodb:UpdateItem",
+                            "dynamodb:UpdateTable",
+                            "dynamodb:GetRecords"
+                        ],
+                        "Resource": {"Fn::GetAtt": ["EventTable", "Arn"]}
+                    } ]
+                }
+            }
+        },
+        "EC2CromwellProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "InstanceProfileName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "db-write-profile"]]},
+                "Path": "/",
+                "Roles": [ {
+                    "Ref": "EC2CromwellRole"
+                } ]
+            }
+        },
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "lambda-role"]]},
+                "AssumeRolePolicyDocument": {
+                    "Version" : "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": [ "sts:AssumeRole" ]
+                    } ]
+                },
+                "Path": "/"
+            }
+        },
+        "LambdaPolicy": {
+            "Type": "AWS::IAM::Policy",
+            "Properties": {
+                "PolicyName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "lambda-policy"]]},
+                "Roles": [{"Ref": "LambdaRole"}],
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [ 
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": "arn:aws:logs:*:*:*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "ec2:RunInstances"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": "iam:PassRole",
+                            "Resource": {"Fn::GetAtt": ["EC2CromwellRole", "Arn"]}
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "dynamodb:Query",
+                                "dynamodb:PutItem"
+                            ],
+                            "Resource": {"Fn::GetAtt": ["EventTable", "Arn"]}
+                        }
+                    ]
+                }
+            }
+        },
+        "RunWorkflowFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles POST to /workflows by spinning up a new EC2 instance and running cromwell",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaWorkflowCode"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "IAM_PROFILE": {"Fn::GetAtt": ["EC2CromwellProfile", "Arn"]},
+                        "DB_TABLE": {"Ref": "EventTable"},
+                        "REGION": {"Ref": "AWS::Region"},
+                        "INSTANCE_TYPE": {"Ref": "InstanceType"},
+                        "VOLUME_SIZE": {"Ref": "VolumeSize"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-post-lambda-fn"]]},
+                "Handler": "local_cromwell.workflows_post",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 15
+            }
+        },
+        "WorkflowStatusFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /workflows/{workflow_id}/status by querying the EventTable",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaWorkflowCode"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "IAM_PROFILE": {"Fn::GetAtt": ["EC2CromwellProfile", "Arn"]},
+                        "DB_TABLE": {"Ref": "EventTable"},
+                        "REGION": {"Ref": "AWS::Region"},
+                        "INSTANCE_TYPE": {"Ref": "InstanceType"},
+                        "VOLUME_SIZE": {"Ref": "VolumeSize"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-status-lambda-fn"]]},
+                "Handler": "local_cromwell.workflow_status",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 10
+            }
+        },
+        "CromwellApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "cromwell-api"]]},
+                "Description": "WES-esque API for a service that runs WDLs with a local cromwell backend.",
+                "Body": {
+                    "swagger": "2.0",
+                    "info": {
+                        "title": "Local Cromwell API",
+                        "version": "0.0.1"
+                    },
+                    "securityDefinitions": {
+                        "api_key": {
+                            "type": "apiKey",
+                            "name": "x-api-key",
+                            "in": "header"
+                        }
+                    },
+                    "schemes": ["https"],
+                    "consumes": ["application/json"],
+                    "produces": ["application/json"],
+                    "definitions": {
+                        "empty": {
+                            "type": "object"
+                        },
+                        "error": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string"
+                                },
+                                "type": {
+                                    "type": "string"
+                                },
+                                "request-id": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "workflowrequest": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_descriptor": {
+                                    "type": "string"
+                                },
+                                "workflow_params": {
+                                    "type": "string"
+                                },
+                                "workflow_dependencies": {
+                                    "type": "string"
+                                }
+                            },
+                            "title": "workflow request"
+                        },
+                        "workflowstatus": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_id": {
+                                    "type": "string",
+                                    "title": "workflow ID"
+                                },
+                                "state": {
+                                    "type": "string",
+                                    "enum": [
+                                        "Unknown",
+                                        "Queued",
+                                        "Running",
+                                        "Paused",
+                                        "Complete",
+                                        "Error",
+                                        "SystemError",
+                                        "Canceled",
+                                        "Initializing"
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "paths": {
+                        "/workflows": {
+                            "post": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "body",
+                                    "in": "body",
+                                    "required": true,
+                                    "schema": {
+                                        "$ref": "#/definitions/workflowrequest"
+                                    }
+                                }],
+                                "responses": {
+                                    "200": {
+                                        "description": "Job created",
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "workflow_id": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["RunWorkflowFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "/workflows/{workflow_id}/status": {
+                            "get": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "workflow_id",
+                                    "in": "path",
+                                    "required": true,
+                                    "type": "string"
+                                }],
+                                "responses": {
+                                    "200": {
+                                        "schema": {
+                                            "$ref": "#/defintions/workflowstatus"
+                                        }
+                                    },
+                                    "404": {
+                                        "description": "Workflow not found",
+                                        "schema": {
+                                            "$ref": "#/definitions/error"
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["WorkflowStatusFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "requestTemplates": {
+                                        "application/json": "{\"workflow_id\": \"$input.params('workflow_id')\"}"
+                                    },
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        },
+                                        ".*httpStatus.*404.*": {
+                                            "statusCode": "404",
+                                            "responseTemplates": {
+                                                "application/json": "#set ($errorMessageObj = $util.parseJson($input.path('$.errorMessage')))\n#set ($bodyObj = $util.parseJson($input.body))\n{\n  \"type\" : \"$errorMessageObj.errorType\",\n  \"message\" : \"$errorMessageObj.message\",\n  \"request-id\" : \"$errorMessageObj.requestId\"\n}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "LambdaRunWorkflowPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["RunWorkflowFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "CromwellApi"},
+                    "/*/POST/workflows"
+                ]]}
+            }
+        },
+        "LambdaWorkflowStatusPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowStatusFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "CromwellApi"},
+                    "/*/GET/workflows/*/status"
+                ]]}
+            }
+        },
+        "ApiTestDeployment": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "Properties": {
+                "RestApiId": {"Ref": "CromwellApi"},
+                "StageName": "test"
+            }
+        }
+    }
+}
