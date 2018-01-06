@@ -1,0 +1,629 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Description": "Distribute workflows to multiple environments and report whether they successfully ran in those environments.",
+    "Parameters": {
+        "LambdaCodeBucket": {
+            "Type": "String",
+            "Description": "S3 bucket with zip file containing code for the lambda functions."
+        },
+        "LambdaCodeKey": {
+            "Type": "String",
+            "Description": "Path within the Lambda code S3 bucket to the zip file with the code."
+        }
+    },
+    "Resources": {
+        "EnvironmentsTable": {
+            "Type": "AWS::DynamoDB::Table",
+            "Properties": {
+                "TableName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "environments-table"]]},
+                "AttributeDefinitions": [
+                    {
+                        "AttributeName": "EnvironmentId",
+                        "AttributeType": "S"
+                    }
+                ],
+                "KeySchema": [
+                    {
+                        "AttributeName": "EnvironmentId",
+                        "KeyType": "HASH"
+                    }
+                ],
+                "ProvisionedThroughput": {
+                    "ReadCapacityUnits": "3",
+                    "WriteCapacityUnits": "3"
+                }
+            }
+        },
+        "TestsTable": {
+            "Type": "AWS::DynamoDB::Table",
+            "Properties": {
+                "TableName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "tests-table"]]},
+                "AttributeDefinitions": [
+                    {
+                        "AttributeName": "TestId",
+                        "AttributeType": "S"
+                    },
+                    {
+                        "AttributeName": "EventId",
+                        "AttributeType": "S"
+                    }
+                ],
+                "KeySchema": [
+                    {
+                        "AttributeName": "TestId",
+                        "KeyType": "HASH"
+                    },
+                    {
+                        "AttributeName": "EventId",
+                        "KeyType": "RANGE"
+                    }
+                ],
+                "ProvisionedThroughput": {
+                    "ReadCapacityUnits": "3",
+                    "WriteCapacityUnits": "3"
+                }
+            }
+        },
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "lambda-role"]]},
+                "AssumeRolePolicyDocument": {
+                    "Version" : "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": [ "sts:AssumeRole" ]
+                    } ]
+                },
+                "Path": "/"
+            }
+        },
+        "TablesPolicy": {
+            "Type": "AWS::IAM::Policy",
+            "Properties": {
+                "PolicyName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "tables-policy"]]},
+                "Roles": [{"Ref": "LambdaRole"}],
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Action": [
+                            "dynamodb:BatchWriteItem",
+                            "dynamodb:PutItem",
+                            "dynamodb:DescribeTable",
+                            "dynamodb:GetItem",
+                            "dynamodb:Scan",
+                            "dynamodb:Query",
+                            "dynamodb:UpdateItem",
+                            "dynamodb:UpdateTable",
+                            "dynamodb:GetRecords"
+                        ],
+                        "Resource": [
+                            {"Fn::GetAtt": ["TestsTable", "Arn"]},
+                            {"Fn::GetAtt": ["EnvironmentsTable", "Arn"]}
+                        ]
+                    } ]
+                }
+            }
+        },
+        "EnvironmentsPostFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles POST to /environments by registering a new environment.",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "ENVIRONMENTS_TABLE": {"Ref": "EnvironmentsTable"},
+                        "TESTS_TABLE": {"Ref": "TestsTable"},
+                        "REGION": {"Ref": "AWS::Region"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "environments-post-fn"]]},
+                "Handler": "portability_service.environments_post",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 15
+            }
+        },
+        "EnvironmentsGetFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /environments by returning a list of registered environments.",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "ENVIRONMENTS_TABLE": {"Ref": "EnvironmentsTable"},
+                        "TESTS_TABLE": {"Ref": "TestsTable"},
+                        "REGION": {"Ref": "AWS::Region"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "environments-get-fn"]]},
+                "Handler": "portability_service.environments_get",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 15
+            }
+        },
+        "TestsPostFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles POST to /portability_tests by submitting a new test to registered environments.",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "ENVIRONMENTS_TABLE": {"Ref": "EnvironmentsTable"},
+                        "TESTS_TABLE": {"Ref": "TestsTable"},
+                        "REGION": {"Ref": "AWS::Region"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "tests-post-fn"]]},
+                "Handler": "portability_service.portability_tests_post",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 15
+            }
+        },
+        "TestsGetStatusFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /portability_tests/{test_id}/status by retrieving test status from registered environments.",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "ENVIRONMENTS_TABLE": {"Ref": "EnvironmentsTable"},
+                        "TESTS_TABLE": {"Ref": "TestsTable"},
+                        "REGION": {"Ref": "AWS::Region"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "tests-get-status-fn"]]},
+                "Handler": "portability_service.portability_tests_get_status",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 30
+            }
+        },
+        "PortabilityApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "rest-api"]]},
+                "Description": "Accepts requests for workflow portability tests.",
+                "Body": {
+                    "swagger": "2.0",
+                    "info": {
+                        "title": "Portability Service API",
+                        "version": "0.0.1"
+                    },
+                    "securityDefinitions": {
+                        "api_key": {
+                            "type": "apiKey",
+                            "name": "x-api-key",
+                            "in": "header"
+                        }
+                    },
+                    "schemes": ["https"],
+                    "consumes": ["application/json"],
+                    "produces": ["application/json"],
+                    "definitions": {
+                        "Empty": {
+                            "type": "object"
+                        },
+                        "Error": {
+                            "type": "object",
+                            "properties": {
+                                "message": {
+                                    "type": "string",
+                                    "title": "Error message"
+                                },
+                                "type": {
+                                    "type": "string",
+                                    "title": "Error type"
+                                },
+                                "request-id": {
+                                    "type": "string",
+                                    "title": "AWS request id"
+                                }
+                            }
+                        },
+                        "FullEnvironmentDescription": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "title": "Human-meaningul name of the environment"
+                                },
+                                "url": {
+                                    "type": "string",
+                                    "title": "Base URL to which environment requests are made"
+                                },
+                                "schema": {
+                                    "type": "string",
+                                    "required": false,
+                                    "title": "The workflow execution API used by the environment"
+                                },
+                                "headers": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {
+                                                "type": "string"
+                                            },
+                                            "value": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "title": "Headers to be used when making requests to the environment"
+                                    }
+                                }
+                            }
+                        },
+                        "EnvironmentDescription": {
+                            "type": "object",
+                            "properties": {
+                                "environment_id": {
+                                    "type": "string",
+                                    "title": "Unique id generated for the environment"
+                                },
+                                "name": {
+                                    "type": "string",
+                                    "title": "Human-meaningful name for the environment"
+                                },
+                                "url": {
+                                    "type": "string",
+                                    "title": "Base URL to which environment requests are made"
+                                },
+                                "schema": {
+                                    "type": "string",
+                                    "required": false,
+                                    "title": "The workflow execution API used by the environment"
+                                }
+                            }
+                        },
+                        "PortabilityTestRequest": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_descriptor": {
+                                    "type": "string",
+                                    "title": "Workflow document, generally WDL or CWL"
+                                },
+                                "workflow_params": {
+                                    "type": "string",
+                                    "title": "Parameters needed to run the workflow, like inputs, execution hints, etc"
+                                },
+                                "workflow_dependencies": {
+                                    "type": "array",
+                                    "title": "Dependencies needed to execute the workflow, for example imported WDLs",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": {
+                                                "type": "string"
+                                            },
+                                            "code": {
+                                                "type": "string"
+                                            }
+                                        },
+                                        "title": "File name and code for each dependency file"
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "paths": {
+                        "/environments": {
+                            "post": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "body",
+                                    "in": "body",
+                                    "required": true,
+                                    "schema": {
+                                        "$ref": "#/definitions/FullEnvironmentDescription"
+                                    }
+                                }],
+                                "responses": {
+                                    "201": {
+                                        "description": "Environment created.",
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "environment_id": {
+                                                    "type": "string"
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["EnvironmentsPostFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "201"
+                                        }
+                                    }
+                                }
+                            },
+                            "get": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [],
+                                "responses": {
+                                    "200": {
+                                        "description": "List of environments.",
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "environments": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "$ref": "#/definitions/EnvironmentDescription"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["EnvironmentsGetFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "/portability_tests": {
+                            "post": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "body",
+                                    "in": "body",
+                                    "required": true,
+                                    "schema": {
+                                        "$ref": "#/definitions/PortabilityTestRequest"
+                                    }
+                                }],
+                                "responses": {
+                                    "201": {
+                                        "type": "object",
+                                        "properties": {
+                                            "test_id": {
+                                                "type": "string"
+                                            }
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["TestsPostFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "201"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        "/portability_tests/{test_id}/status": {
+                            "get": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "test_id",
+                                    "in": "path",
+                                    "required": true,
+                                    "type": "string"
+                                }],
+                                "responses": {
+                                    "200": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "state": {
+                                                    "type": "string"
+                                                },
+                                                "environment_states": {
+                                                    "type": "array",
+                                                    "items": {
+                                                        "type": "object",
+                                                        "properties": {
+                                                            "environment_id": {
+                                                                "type": "string"
+                                                            },
+                                                            "workflow_id": {
+                                                                "type": "string"
+                                                            },
+                                                            "state": {
+                                                                "type": "string"
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "404": {
+                                        "description": "Workflow not found",
+                                        "schema": {
+                                            "$ref": "#/definitions/Error"
+                                        }
+                                    },
+                                    "500": {
+                                        "description": "Unhandled submission Error",
+                                        "schema": {
+                                            "$ref": "#/definitions/Error"
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["TestsGetStatusFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "requestTemplates": {
+                                        "application/json": "{\"test_id\": \"$input.params('test_id')\"}"
+                                    },
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        },
+                                        ".*httpStatus.*404.*": {
+                                            "statusCode": "404",
+                                            "responseTemplates": {
+                                                "application/json": "#set ($errorMessageObj = $util.parseJson($input.path('$.errorMessage')))\n#set ($bodyObj = $util.parseJson($input.body))\n{\n  \"type\" : \"$errorMessageObj.errorType\",\n  \"message\" : \"$errorMessageObj.message\",\n  \"request-id\" : \"$errorMessageObj.requestId\"\n}"
+                                            }
+                                        },
+                                        ".*httpStatus.*500.*": {
+                                            "statusCode": "500",
+                                            "responseTemplates": {
+                                                "application/json": "#set ($errorMessageObj = $util.parseJson($input.path('$.errorMessage')))\n#set ($bodyObj = $util.parseJson($input.body))\n{\n  \"type\" : \"$errorMessageObj.errorType\",\n  \"message\" : \"$errorMessageObj.message\",\n  \"request-id\" : \"$errorMessageObj.requestId\"\n}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "EnvironmentsPostPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["EnvironmentsPostFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "PortabilityApi"},
+                    "/*/POST/environments"
+                    ]]}
+            }
+        },
+        "EnvironmentsGetPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["EnvironmentsGetFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "PortabilityApi"},
+                    "/*/GET/environments"
+                    ]]}
+            }
+        },
+        "TestsGetStatusPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["TestsGetStatusFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "PortabilityApi"},
+                    "/*/GET/portability_tests/*/status"
+                    ]]}
+            }
+        },
+        "TestsPostPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["TestsPostFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "PortabilityApi"},
+                    "/*/POST/portability_tests"
+                    ]]}
+            }
+        }
+    }
+}
