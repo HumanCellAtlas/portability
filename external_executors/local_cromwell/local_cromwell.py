@@ -103,16 +103,48 @@ fi
 # that refer to remote locations with entries that refer to the local paths.
 # TODO: Handle protocols other than http (gs, s3, ...)
 python3 << END
-import json, os, subprocess
+import json, os, subprocess, tempfile
+from google.cloud import storage
 inputs_dict = json.load(open("inputs.json"))
-localized_inputs_dict = dict()
-for entry, value in inputs_dict.items():
-    if value.startswith("https://") or value.startswith("http://"):
-        local_path = os.path.basename(value)
-        subprocess.run(["curl", "-o", local_path, value], check=True)
-        localized_inputs_dict[entry] = local_path
+
+def match_url(s):
+    return s.startswith("http://") or \
+           s.startswith("https://") or \
+           s.startswith("gs://")
+
+def localize_url(url):
+    tmp_dir = tempfile.mkdtemp()
+    if url.startswith("https://") or url.startswith("http://"):
+        local_path = os.path.join(tmp_dir, os.path.basename(url))
+        subprocess.run(["curl", "-o", local_path, url], check=True)
+        return local_path
+    elif url.startswith("gs://"):
+        client = storage.client.Client.create_anonymous_client()
+        path_parts = url.replace("gs://", "").split("/")
+        bucket_name, *blob_parts = url.replace("gs://", "").split("/")
+        bucket = client.bucket(bucket_name)
+        blob_name = "/".join(blob_parts)
+        blob = bucket.blob(blob_name)
+        local_path = os.path.join(tmp_dir, blob_parts[-1])
+        blob.download_to_filename(local_path)
+        return local_path
     else:
-        localized_inputs_dict[entry] = value
+        return url
+
+def localize_inputs(obj, match_func, localize_func):
+    if isinstance(obj, (list, tuple)):
+        return [localize_inputs(e, match_func, localize_func) for e in obj]
+    elif isinstance(obj, dict):
+        return {{k: localize_inputs(v, match_func, localize_func) for k, v in obj.items()}}
+    elif isinstance(obj, str):
+        if match_func(obj):
+            return localize_func(obj)
+        else:
+            return obj
+    else:
+        return obj
+
+localized_inputs_dict = localize_inputs(inputs_dict, match_url, localize_url)
 json.dump(localized_inputs_dict, open("localized_inputs.json", "w"))
 END
 
@@ -168,7 +200,7 @@ shutdown -H 5
 USER_DATA = """#!/bin/bash
 yum update -y
 yum install -y python36 python36-pip
-pip-3.6 install boto3
+pip-3.6 install boto3 google-cloud-storage
 
 python3 << END
 import boto3
