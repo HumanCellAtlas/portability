@@ -6,7 +6,7 @@
             "Type": "String",
             "Description": "S3 bucket with zip files containing code for the lambda functions."
         },
-        "LambdaWorkflowCode": {
+        "LambdaCodeKey": {
             "Type": "String",
             "Description": "Path within the Lambda code S3 bucket to the zip file with the handlers for /workflows endpoints."
         },
@@ -171,7 +171,7 @@
                 "Description": "Handles POST to /workflows by spinning up a new EC2 instance and running cromwell",
                 "Code": {
                     "S3Bucket": {"Ref": "LambdaCodeBucket"},
-                    "S3Key": {"Ref": "LambdaWorkflowCode"}
+                    "S3Key": {"Ref": "LambdaCodeKey"}
                 },
                 "Environment": {
                     "Variables": {
@@ -195,7 +195,7 @@
                 "Description": "Handles GET to /workflows/{workflow_id}/status by querying the EventTable",
                 "Code": {
                     "S3Bucket": {"Ref": "LambdaCodeBucket"},
-                    "S3Key": {"Ref": "LambdaWorkflowCode"}
+                    "S3Key": {"Ref": "LambdaCodeKey"}
                 },
                 "Environment": {
                     "Variables": {
