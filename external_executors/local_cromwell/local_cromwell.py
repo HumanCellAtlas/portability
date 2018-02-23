@@ -82,7 +82,7 @@ trap 'fail' EXIT
 yum update -y
 yum install -y docker java-1.8.0-openjdk-headless
 service docker start
-wget -q https://github.com/broadinstitute/cromwell/releases/download/30.1/cromwell-30.1.jar
+wget -q https://github.com/broadinstitute/cromwell/releases/download/30.2/cromwell-30.2.jar
 
 # Record a job start event
 record_event "Started"
@@ -155,7 +155,7 @@ record_event "InputsLocalized"
 # we want the log.
 record_event "CromwellStarting"
 set +e
-java8 -jar cromwell-30.1.jar run workflow.wdl --inputs localized_inputs.json 2>&1 | tee cromwell.log
+java8 -jar cromwell-30.2.jar run workflow.wdl --inputs localized_inputs.json 2>&1 | tee cromwell.log
 cromwell_rc=${{PIPESTATUS[0]}}
 set -e
 record_event "CromwellFinished" "$cromwell_rc"

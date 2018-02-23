@@ -14,7 +14,7 @@
             "Type": "String",
             "Description": "Instance type used for running Cromwell.",
             "Default": "t2.medium",
-            "AllowedValues": ["t2.small", "t2.medium", "t2.large", "r4.large"]
+            "AllowedValues": ["t2.small", "t2.medium", "t2.large", "r4.large", "r4.xlarge"]
         },
         "VolumeSize": {
             "Type": "Number",
