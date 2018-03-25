@@ -73,6 +73,7 @@ END
 function fail {{
     set +e
     record_event "Failed"
+    shutdown -c || true
     shutdown -H 5
 }}
 
@@ -191,6 +192,7 @@ fi
 
 # Turn off the trap or it records Failed twice.
 trap - EXIT
+shutdown -c || true
 shutdown -H 5
 """
 
@@ -217,6 +219,9 @@ script = response["Items"][0]["Message"]
 with open("local_cromwell_run.bash", "w") as f:
     f.write(script)
 END
+
+# Set a maximum run time of 90 minutes to kill stalled jobs.
+shutdown -H 90 &
 
 bash local_cromwell_run.bash
 """
