@@ -267,10 +267,35 @@
                 "Timeout": 10
             }
         },
+        "WorkflowLogFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /workflows/{workflow_id}",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "IAM_PROFILE": {"Fn::GetAtt": ["EC2CromwellProfile", "Arn"]},
+                        "DB_TABLE": {"Ref": "EventTable"},
+                        "REGION": {"Ref": "AWS::Region"},
+                        "INSTANCE_TYPE": {"Ref": "InstanceType"},
+                        "VOLUME_SIZE": {"Ref": "VolumeSize"},
+                        "SUBNET": {"Ref": "Subnet"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-log-lambda-fn"]]},
+                "Handler": "local_cromwell.workflow_log",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 10
+            }
+        },
         "CromwellApi": {
             "Type": "AWS::ApiGateway::RestApi",
             "Properties": {
-                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "cromwell-api"]]},
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "api"]]},
                 "Description": "WES-esque API for a service that runs WDLs with a local cromwell backend.",
                 "Body": {
                     "swagger": "2.0",
@@ -306,7 +331,16 @@
                                 }
                             }
                         },
-                        "workflowrequest": {
+                        "WESWorkflowRunId": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_id": {
+                                    "type": "string",
+                                    "title": "workflow ID"
+                                }
+                            }
+                        },
+                        "WESWorkflowRequest": {
                             "type": "object",
                             "properties": {
                                 "workflow_descriptor": {
@@ -321,7 +355,63 @@
                             },
                             "title": "workflow request"
                         },
-                        "workflowstatus": {
+                        "WESState": {
+                            "type": "string",
+                            "enum": [
+                                "UNKNOWN",
+                                "QUEUED",
+                                "INITIALIZING",
+                                "RUNNING",
+                                "PAUSED",
+                                "COMPLETE",
+                                "EXECUTOR_ERROR",
+                                "SYSTEM_ERROR",
+                                "CANCELED"
+                            ],
+                            "default": "UNKNOWN",
+                            "title": "Enumeration of WES states"
+                        },
+                        "WESWorkflowDesc": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_id": {
+                                    "type": "string",
+                                    "title": "REQUIRED"
+                                },
+                                "state": {
+                                    "$ref": "#/definitions/WESState"
+                                }
+                            }
+                        },
+                        "WESLog": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_id": {
+                                    "type": "string",
+                                    "title": "workflow ID"
+                                },
+                                "stdout": {
+                                    "type": "string",
+                                    "title": "stdout"
+                                },
+                                "stderr": {
+                                    "type": "string",
+                                    "title": "stderr"
+                                },
+                                "start_time": {
+                                    "type": "string"
+                                },
+                                "end_time": {
+                                    "type": "string"
+                                },
+                                "exit_code": {
+                                    "type": "integer",
+                                    "format": "int32",
+                                    "title": "Exit code"
+                                }
+                            }
+                        },
+                        "WESWorkflowLog": {
                             "type": "object",
                             "properties": {
                                 "workflow_id": {
@@ -329,18 +419,28 @@
                                     "title": "workflow ID"
                                 },
                                 "state": {
+                                    "$ref": "#/definitions/WESState"
+                                },
+                                "workflow_log": {
+                                    "$ref": "#/definitions/WESLog"
+                                },
+                                "task_logs": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/WESLog"
+                                    }
+                                }
+                            }
+                        },
+                        "WESWorkflowStatus": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_id": {
                                     "type": "string",
-                                    "enum": [
-                                        "Unknown",
-                                        "Queued",
-                                        "Running",
-                                        "Paused",
-                                        "Complete",
-                                        "Error",
-                                        "SystemError",
-                                        "Canceled",
-                                        "Initializing"
-                                    ]
+                                    "title": "workflow ID"
+                                },
+                                "state": {
+                                    "$ref": "#/definitions/WESState"
                                 }
                             }
                         }
@@ -356,19 +456,14 @@
                                     "in": "body",
                                     "required": true,
                                     "schema": {
-                                        "$ref": "#/definitions/workflowrequest"
+                                        "$ref": "#/definitions/WESWorkflowRequest"
                                     }
                                 }],
                                 "responses": {
                                     "200": {
                                         "description": "Job created",
                                         "schema": {
-                                            "type": "object",
-                                            "properties": {
-                                                "workflow_id": {
-                                                    "type": "string"
-                                                }
-                                            }
+                                            "$ref": "#/definitions/WESWorkflowRunId"
                                         }
                                     }
                                 },
@@ -395,6 +490,62 @@
                                 }
                             }
                         },
+                        "/workflows/{workflow_id}": {
+                            "get": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "workflow_id",
+                                    "in": "path",
+                                    "required": true,
+                                    "type": "string"
+                                }],
+                                "responses": {
+                                    "200": {
+                                        "schema": {
+                                            "$ref": "#/defintions/WESWorkflowLog"
+                                        }
+                                    },
+                                    "404": {
+                                        "description": "Workflow not found",
+                                        "schema": {
+                                            "$ref": "#/definitions/error"
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["WorkflowLogFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "requestTemplates": {
+                                        "application/json": "{\"workflow_id\": \"$input.params('workflow_id')\"}"
+                                    },
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        },
+                                        ".*httpStatus.*404.*": {
+                                            "statusCode": "404",
+                                            "responseTemplates": {
+                                                "application/json": "#set ($errorMessageObj = $util.parseJson($input.path('$.errorMessage')))\n#set ($bodyObj = $util.parseJson($input.body))\n{\n  \"type\" : \"$errorMessageObj.errorType\",\n  \"message\" : \"$errorMessageObj.message\",\n  \"request-id\" : \"$errorMessageObj.requestId\"\n}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
                         "/workflows/{workflow_id}/status": {
                             "get": {
                                 "security": [{
@@ -409,7 +560,7 @@
                                 "responses": {
                                     "200": {
                                         "schema": {
-                                            "$ref": "#/defintions/workflowstatus"
+                                            "$ref": "#/defintions/WESWorkflowStatus"
                                         }
                                     },
                                     "404": {
@@ -486,6 +637,23 @@
                     ":",
                     {"Ref": "CromwellApi"},
                     "/*/GET/workflows/*/status"
+                ]]}
+            }
+        },
+        "LambdaWorkflowLogPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowLogFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "CromwellApi"},
+                    "/*/GET/workflows/*"
                 ]]}
             }
         },
