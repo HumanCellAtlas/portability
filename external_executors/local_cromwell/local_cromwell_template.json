@@ -25,6 +25,57 @@
         }
     },
     "Resources": {
+        "VPC": {
+            "Type": "AWS::EC2::VPC",
+            "Properties": {
+                "CidrBlock": "172.31.0.0/16",
+                "Tags": [
+                    {"Key": "Name",
+                     "Value": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "vpc"]]}
+                    }
+                ]
+            }
+        },
+        "InternetGateway": {
+            "Type": "AWS::EC2::InternetGateway"
+        },
+        "IGAttachment": {
+            "Type": "AWS::EC2::VPCGatewayAttachment",
+            "Properties": {
+                "InternetGatewayId": {"Ref": "InternetGateway"},
+                "VpcId": {"Ref": "VPC"}
+            }
+        },
+        "Subnet": {
+            "Type": "AWS::EC2::Subnet",
+            "Properties": {
+                "VpcId": {"Ref": "VPC"},
+                "MapPublicIpOnLaunch": true,
+                "CidrBlock": "172.31.0.0/20"
+            }
+        },
+        "PublicRouteTable": {
+            "Type": "AWS::EC2::RouteTable",
+            "Properties": {
+                "VpcId": {"Ref": "VPC"}
+            }
+        },
+        "PublicRoute": {
+            "Type": "AWS::EC2::Route",
+            "Properties": {
+                "DestinationCidrBlock": "0.0.0.0/0",
+                "GatewayId": {"Ref": "InternetGateway"},
+                "RouteTableId": {"Ref": "PublicRouteTable"}
+            },
+            "DependsOn": "InternetGateway"
+        },
+        "PublicRouteTableSubnetAssociation": {
+            "Type": "AWS::EC2::SubnetRouteTableAssociation",
+            "Properties": {
+                "RouteTableId": {"Ref": "PublicRouteTable"},
+                "SubnetId": {"Ref": "Subnet"}
+            }
+        },
         "EventTable": {
             "Type": "AWS::DynamoDB::Table",
             "Properties": {
@@ -144,7 +195,8 @@
                         {
                             "Effect": "Allow",
                             "Action": [
-                                "ec2:RunInstances"
+                                "ec2:RunInstances",
+                                "ec2:CreateTags"
                             ],
                             "Resource": "*"
                         },
@@ -179,7 +231,8 @@
                         "DB_TABLE": {"Ref": "EventTable"},
                         "REGION": {"Ref": "AWS::Region"},
                         "INSTANCE_TYPE": {"Ref": "InstanceType"},
-                        "VOLUME_SIZE": {"Ref": "VolumeSize"}
+                        "VOLUME_SIZE": {"Ref": "VolumeSize"},
+                        "SUBNET": {"Ref": "Subnet"}
                     }
                 },
                 "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-post-lambda-fn"]]},
@@ -203,7 +256,8 @@
                         "DB_TABLE": {"Ref": "EventTable"},
                         "REGION": {"Ref": "AWS::Region"},
                         "INSTANCE_TYPE": {"Ref": "InstanceType"},
-                        "VOLUME_SIZE": {"Ref": "VolumeSize"}
+                        "VOLUME_SIZE": {"Ref": "VolumeSize"},
+                        "SUBNET": {"Ref": "Subnet"}
                     }
                 },
                 "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-status-lambda-fn"]]},

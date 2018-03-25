@@ -35,7 +35,9 @@ CLOUDFORMATION_VARIABLES = {
     "instance_type": os.environ["INSTANCE_TYPE"],
     "volume_size": int(os.environ["VOLUME_SIZE"]),
     "table_name": os.environ["DB_TABLE"],
-    "iam_profile": os.environ["IAM_PROFILE"]
+    "iam_profile": os.environ["IAM_PROFILE"],
+    "subnet": os.environ["SUBNET"]
+
 }
 
 # This script is responsible for running downloading inputs, running Cromwell,
@@ -325,6 +327,14 @@ def workflows_post(event, context):
         MaxCount=1,
         InstanceInitiatedShutdownBehavior='terminate',
         UserData=user_data,
+        SubnetId=CLOUDFORMATION_VARIABLES["subnet"],
+        TagSpecifications=[{
+            "ResourceType": "instance",
+            "Tags": [
+                {"Key": "Name", "Value": "local-cromwell-portability-test"},
+                {"Key": "JobId", "Value": job_id}
+            ]}
+        ],
         IamInstanceProfile={
             "Arn": CLOUDFORMATION_VARIABLES["iam_profile"]
         }
