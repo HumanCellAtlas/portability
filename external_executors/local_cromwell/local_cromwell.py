@@ -163,26 +163,75 @@ cromwell_rc=${{PIPESTATUS[0]}}
 set -e
 record_event "CromwellFinished" "$cromwell_rc"
 
-# Record a log event. We can't pass the message as a bash variable, so don't
+# Record log events. We can't pass the message as a bash variable, so don't
 # use the record_event function.
 python3 << END
-import boto3, datetime, glob, json, uuid
-event_id = str(uuid.uuid4())
+import boto3, datetime, glob, json, os, uuid
+
+# First we're going to record the workflow log, which is what cromwell writes
+# to stdout and stderr. We tee'd it to cromwell.log above.
 ddb = boto3.resource("dynamodb", region_name="{region}")
 table = ddb.Table("{db_table}")
+
+event_id = str(uuid.uuid4())
 try:
     log = open("cromwell.log").read()
 except IndexError:
     log = "No Cromwell logs found."
- 
+
 table.put_item(
     Item={{
         "EventId": event_id,
         "JobId": "{job_id}",
-        "EventType": "JobLog",
+        "EventType": "WorkflowLog",
         "Message": log,
         "Time": "{{:%Y-%m-%dT%H:%M:%SZ}}".format(datetime.datetime.utcnow())
     }}
+)
+
+# Now record an event for the task logs, the stdout and stderr of each task.
+# I guess this will just be a big json
+
+task_logs_list = []
+max_log_size = 5 << 10
+event_id = str(uuid.uuid4())
+for root, dirs, files in os.walk("/cromwell-executions/"):
+    if "stdout" in files and "stderr" in files:
+        try:
+            stderr_path = os.path.join(root, "stderr")
+            stderr = open(stderr_path).read(max_log_size)
+        except Exception as exc:
+            stderr = "Could not read stderr because {{}}".format(exc)
+
+        try:
+            stdout_path = os.path.join(root, "stdout")
+            stdout = open(stdout_path).read(max_log_size)
+        except Exception as exc:
+            stdout = "Could not read stdout because {{}}".format(exc)
+
+        try:
+            rc_path = os.path.join(root, "rc")
+            rc = int(open(rc_path).read().strip())
+        except:
+            rc = -1
+
+        task_name = root[len("/cromwell-executions/"):]
+        task_logs_list.append({{
+            "name": task_name,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": rc
+        }})
+
+table.put_item(
+    Item={{
+        "EventId": event_id,
+        "JobId": "{job_id}",
+        "EventType": "TaskLogs",
+        "Message": json.dumps(task_logs_list),
+        "Time": "{{:%Y-%m-%dT%H:%M:%SZ}}".format(datetime.datetime.utcnow())
+    }}
+
 )
 END
 
@@ -412,3 +461,56 @@ def workflow_status(event, context):
         "workflow_id": workflow_id,
         "state": job_status
     }
+
+def workflow_log(event, context):
+    """Handle GET requests to /workflow/{workflow_id}"""
+
+    workflow_id = event["workflow_id"]
+    ddb = boto3.resource("dynamodb", region_name=CLOUDFORMATION_VARIABLES["region"])
+    table = ddb.Table(CLOUDFORMATION_VARIABLES["table_name"])
+    db_response = table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('JobId').eq(workflow_id)
+    )
+
+    if not db_response["Count"]:
+        error_dict = {
+            "errorType": "NotFound",
+            "httpStatus": "404",
+            "requestId": context.aws_request_id,
+            "message": "Workflow {} was not found".format(workflow_id)
+            }
+
+        raise Exception(json.dumps(error_dict))
+
+
+    # This is a subset of the response defined by WES.
+    response = {
+        "state": "",
+        "workflow_id": "",
+        "workflow_log": {
+            "start_time": "",
+            "end_time": "",
+            "stdout": "",
+            "stderr": "",
+            "exit_code": -1
+        },
+        "task_logs": []
+    }
+
+    response["state"] = wes_state_from_db_items(db_response["Items"])
+    response["workflow_id"] = workflow_id
+
+    for db_item in db_response["Items"]:
+        if db_item["EventType"] == "WorkflowLog":
+            response["workflow_log"]["stdout"] = db_item["Message"]
+        elif db_item["EventType"] == "Started":
+            response["workflow_log"]["start_time"] = db_item["Time"]
+        elif db_item["EventType"] in ("Succeeded", "Failed"):
+            response["workflow_log"]["end_time"] = db_item["Time"]
+        elif db_item["EventType"] == "CromwellFinished":
+            response["workflow_log"]["exit_code"] = db_item["Message"]
+        elif db_item["EventType"] == "TaskLogs":
+            task_logs_list = json.loads(db_item["Message"])
+            response["task_logs"] = task_logs_list
+
+    return response
