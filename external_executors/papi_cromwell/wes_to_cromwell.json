@@ -1,0 +1,300 @@
+{
+    "AWSTemplateFormatVersion" : "2010-09-09",
+    "Description": "Forward WES requests to Cromwell/Google",
+    "Parameters": {
+        "LambdaCodeBucket": {
+            "Type": "String",
+            "Description": "S3 bucket with the lambda code zip file."
+        },
+        "LambdaCodeKey": {
+            "Type": "String",
+            "Description": "Path within the bucket to the zip file."
+        },
+        "SwaggerPath": {
+            "Type": "String",
+            "Description": "Path to the WES swagger"
+        }
+    },
+    "Resources": {
+        "LambdaRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "RoleName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "lambda-role"]]},
+                "AssumeRolePolicyDocument": {
+                    "Version" : "2012-10-17",
+                    "Statement": [ {
+                        "Effect": "Allow",
+                        "Principal": {
+                            "Service": ["lambda.amazonaws.com"]
+                        },
+                        "Action": [ "sts:AssumeRole" ]
+                    } ]
+                },
+                "Path": "/"
+            }
+        },
+        "LoggingPolicy": {
+            "Type": "AWS::IAM::Policy",
+            "Properties": {
+                "PolicyName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "logging-policy"]]},
+                "Roles": [{"Ref": "LambdaRole"}],
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": "arn:aws:logs:*:*:*"
+                        }
+                    ]
+                }
+            }
+        },
+        "WESApi": {
+            "Type": "AWS::ApiGateway::RestApi",
+            "Properties": {
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "api"]]},
+                "Description": "Accepts WES requests and delegates them to Cromwell.",
+                "Body": {
+                    "Fn::Transform": {
+                        "Name": "AWS::Include",
+                        "Parameters": {
+                            "Location": {"Ref": "SwaggerPath"}
+                        }
+                    }
+                }
+            }
+        },
+        "ApiDeployment": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "Properties": {
+                "RestApiId": {"Ref": "WESApi"},
+                "StageName": "test"
+            }
+        },
+        "ApiTestKey": {
+            "Type": "AWS::ApiGateway::ApiKey",
+            "Properties": {
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "api-key"]]},
+                "Enabled": true
+            }
+        },
+        "ApiUsagePlan": {
+            "Type": "AWS::ApiGateway::UsagePlan",
+            "Properties": {
+                "ApiStages": [
+                    {
+                        "ApiId": {"Ref": "WESApi"},
+                        "Stage": "test"
+                    }
+                ],
+                "UsagePlanName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "usage-plan"]]}
+            },
+            "DependsOn": "ApiDeployment"
+        },
+        "ApiUsagePlanKey": {
+            "Type": "AWS::ApiGateway::UsagePlanKey",
+            "Properties": {
+                "KeyId": {"Ref": "ApiTestKey"},
+                "KeyType": "API_KEY",
+                "UsagePlanId": {"Ref": "ApiUsagePlan"}
+            }
+        },
+        "ServiceInfoGetFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /service-info",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "service-info-get"]]},
+                "Handler": "wes_to_cromwell.wes_service_info_get",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 29
+            }
+        },
+        "ServiceInfoGetPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["ServiceInfoGetFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "WESApi"},
+                    "/*/GET/service-info"
+                    ]]}
+            }
+        },
+        "WorkflowsGetFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /workflows",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-get"]]},
+                "Handler": "wes_to_cromwell.wes_workflows_get",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 29
+            }
+        },
+        "WorkflowsGetPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowsGetFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "WESApi"},
+                    "/*/GET/workflows"
+                    ]]}
+            }
+        },
+        "WorkflowsPostFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles POST to /workflows",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-post"]]},
+                "Handler": "wes_to_cromwell.wes_workflows_post",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 29
+            }
+        },
+        "WorkflowsPostPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowsPostFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "WESApi"},
+                    "/*/POST/workflows"
+                    ]]}
+            }
+        },
+        "WorkflowsWorkflowIdGetFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /workflows/<workflow_id>",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-workflow-id-get"]]},
+                "Handler": "wes_to_cromwell.wes_workflows_workflow_id_get",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 29
+            }
+        },
+        "WorkflowsWorkflowIdGetPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowsWorkflowIdGetFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "WESApi"},
+                    "/*/GET/workflows/*"
+                    ]]}
+            }
+        },
+        "WorkflowsWorkflowIdDeleteFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles DELETE to /workflows/<workflow_id>",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-workflow-id-delete"]]},
+                "Handler": "wes_to_cromwell.wes_workflows_workflow_id_delete",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 29
+            }
+        },
+        "WorkflowsWorkflowIdDeletePermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowsWorkflowIdDeleteFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "WESApi"},
+                    "/*/DELETE/workflows/*"
+                    ]]}
+            }
+        },
+        "WorkflowsWorkflowIdStatusGetFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /workflows/<workflow_id>/status",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "workflows-workflow-id-status-get"]]},
+                "Handler": "wes_to_cromwell.wes_workflows_workflow_id_status_get",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 29
+            }
+        },
+        "WorkflowsWorkflowIdStatusGetPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["WorkflowsWorkflowIdStatusGetFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "WESApi"},
+                    "/*/GET/workflows/*/status"
+                    ]]}
+            }
+        }
+    }
+}
