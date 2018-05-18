@@ -1,0 +1,3 @@
+{
+    "hello.input_file": "gs://hca-dcp-mint-test-data/reference/GRCh38_Gencode/gencode.v27.rRNA.interval_list"
+}
