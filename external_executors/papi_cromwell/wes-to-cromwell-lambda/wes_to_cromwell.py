@@ -96,7 +96,7 @@ def wes_workflows_post(event, context):
         # placed in the workflow_url parameter
         for zipinfo in z.filelist:
             if zipinfo.filename == event["workflow_url"]:
-                entry_point_wdl_string = z.read(zipinfo)
+                entry_point_wdl_string = z.read(zipinfo).decode()
 
         # If we got far enough to decode and extract the file but still didn't
         # fine the entry point, then that's bad.
@@ -167,7 +167,7 @@ def wes_workflows_workflow_id_get(event, context):
     wes_response["workflow_id"] = cromwell_response_json["id"]
     wes_response["request"] = {
         "workflow_descriptor": cromwell_response_json.get("submittedFiles", {}).get("workflow"),
-        "workflow_params": json.loads(cromwell_response.get("submittedFiles", {}).get("inputs")),
+        "workflow_params": json.loads(cromwell_response_json.get("submittedFiles", {}).get("inputs")),
         "workflow_type": cromwell_response_json.get("submittedFiles", {}).get("workflowType")
     }
     wes_response["state"] = CROMWELL_TO_WES_STATUS[cromwell_response_json["status"]]
