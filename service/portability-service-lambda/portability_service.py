@@ -117,6 +117,7 @@ def wes_submit(environment_id, wdl, params, dependency_wdls):
     base_url = ddb_response["Items"][0]["Url"]
     workflows_url = os.path.join(base_url, "workflows")
     headers = ddb_response["Items"][0]["Headers"]
+    key_values = ddb_response["Items"][0]["KeyValues"]
 
     # Then convert any dependency WDLs into a base64-encoded ZIP file.
     # Taken mostly from here:
@@ -142,6 +143,9 @@ def wes_submit(environment_id, wdl, params, dependency_wdls):
     }
     if b64_encoded_dependencies:
         post_data["workflow_dependencies"] = b64_encoded_dependencies.decode()
+
+    if key_values != "none":
+        post_data["key_values"] = json.loads(key_values)
 
     wes_response = requests.post(workflows_url, headers=headers, json=post_data)
 
@@ -190,7 +194,8 @@ def environments_post(event, context):
             "Url": event["url"],
             "Name": event["name"],
             "Schema": event["schema"],
-            "Headers": event.get("headers", "none")
+            "Headers": event.get("headers", "none"),
+            "KeyValues": event.get("key_values", "none")
         }
     )
 

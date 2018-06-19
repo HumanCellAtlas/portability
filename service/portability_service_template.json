@@ -276,6 +276,10 @@
                                     "required": false,
                                     "title": "The workflow execution API used by the environment"
                                 },
+                                "key_values": {
+                                    "type": "object",
+                                    "additionalProperties": "string"
+                                },
                                 "headers": {
                                     "type": "object",
                                     "additionalProperties": "string",
