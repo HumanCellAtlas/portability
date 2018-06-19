@@ -81,6 +81,27 @@
                 "Path": "/"
             }
         },
+        "LoggingPolicy": {
+            "Type": "AWS::IAM::Policy",
+            "Properties": {
+                "PolicyName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "logging-policy"]]},
+                "Roles": [{"Ref": "LambdaRole"}],
+                "PolicyDocument": {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "logs:CreateLogGroup",
+                                "logs:CreateLogStream",
+                                "logs:PutLogEvents"
+                            ],
+                            "Resource": "arn:aws:logs:*:*:*"
+                        }
+                    ]
+                }
+            }
+        },
         "TablesPolicy": {
             "Type": "AWS::IAM::Policy",
             "Properties": {
@@ -256,19 +277,9 @@
                                     "title": "The workflow execution API used by the environment"
                                 },
                                 "headers": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "object",
-                                        "properties": {
-                                            "name": {
-                                                "type": "string"
-                                            },
-                                            "value": {
-                                                "type": "string"
-                                            }
-                                        },
-                                        "title": "Headers to be used when making requests to the environment"
-                                    }
+                                    "type": "object",
+                                    "additionalProperties": "string",
+                                    "title": "Headers to be used when making requests to the environment"
                                 }
                             }
                         },
@@ -623,6 +634,41 @@
                     {"Ref": "PortabilityApi"},
                     "/*/POST/portability_tests"
                     ]]}
+            }
+        },
+        "ApiTestDeployment": {
+            "Type": "AWS::ApiGateway::Deployment",
+            "Properties": {
+                "RestApiId": {"Ref": "PortabilityApi"},
+                "StageName": "skylabci"
+            }
+        },
+        "ApiTestKey": {
+            "Type": "AWS::ApiGateway::ApiKey",
+            "Properties": {
+                "Name": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "api-key"]]},
+                "Enabled": true
+            }
+        },
+        "ApiUsagePlan": {
+            "Type": "AWS::ApiGateway::UsagePlan",
+            "Properties": {
+                "ApiStages": [
+                    {
+                        "ApiId": {"Ref": "PortabilityApi"},
+                        "Stage": "skylabci"
+                    }
+                ],
+                "UsagePlanName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "usage-plan"]]}
+            },
+            "DependsOn": "ApiTestDeployment"
+        },
+        "ApiUsagePlanKey": {
+            "Type": "AWS::ApiGateway::UsagePlanKey",
+            "Properties": {
+                "KeyId": {"Ref": "ApiTestKey"},
+                "KeyType": "API_KEY",
+                "UsagePlanId": {"Ref": "ApiUsagePlan"}
             }
         }
     }
