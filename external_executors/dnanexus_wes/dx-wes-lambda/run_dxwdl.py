@@ -6,7 +6,7 @@ import dxpy
 
 # Two pieces of metadata we can use to tell if this applet is already built and
 # available on dnanexus.
-APPLET_VERSION = "0.0.17"
+APPLET_VERSION = "0.0.18"
 APPLET_NAME = "wes_dxwdl_runner"
 
 # The code for the applet itself. This downloads dxWDL, replaces remote URLs
@@ -45,12 +45,12 @@ def main(workflow_descriptor, workflow_params, wes_id, project, workflow_depende
         proc = subprocess.Popen(unzip_cmd)
         proc.communicate()
 
-    download_dxwdl_cmd = ["wget", "-q", "https://github.com/dnanexus/dxWDL/releases/download/0.61.1/dxWDL-0.61.1.jar"]
+    download_dxwdl_cmd = ["wget", "-q", "https://github.com/dnanexus/dxWDL/releases/download/0.66.1/dxWDL-0.66.1.jar"]
     proc = subprocess.Popen(download_dxwdl_cmd)
     proc.communicate()
 
     dxpy.set_project_context(project)
-    dxwdl_cmd = ["java", "-jar", "dxWDL-0.61.1.jar", "compile", "workflow.wdl",
+    dxwdl_cmd = ["java", "-jar", "dxWDL-0.66.1.jar", "compile", "workflow.wdl",
                  "-inputs", "dx_inputs.json", "-destination", "/" + wes_id]
     if workflow_dependencies:
         dxwdl_cmd.extend(["-imports", "wdl_dependencies"])
