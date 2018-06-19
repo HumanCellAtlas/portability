@@ -3,12 +3,12 @@ set -ex
 
 # Set up dependencies for the lambdas
 # Install the DNAnexus SDK and move some things around to paths resolve
-wget https://wiki.dnanexus.com/images/files/dx-toolkit-v0.250.3-ubuntu-14.04-amd64.tar.gz
-tar xf dx-toolkit-v0.250.3-ubuntu-14.04-amd64.tar.gz
+wget https://wiki.dnanexus.com/images/files/dx-toolkit-v0.255.0-ubuntu-14.04-amd64.tar.gz
+tar xf dx-toolkit-v0.255.0-ubuntu-14.04-amd64.tar.gz
 cp -r dx-toolkit/share/dnanexus/lib/python2.7/site-packages/* dx-wes-lambda
 mkdir -p dx-wes-lambda/bin
 cp dx-toolkit/bin/* dx-wes-lambda/bin
-rm -r dx-toolkit-v0.250.3-ubuntu-14.04-amd64.tar.gz dx-toolkit/
+rm -r dx-toolkit-v0.255.0-ubuntu-14.04-amd64.tar.gz dx-toolkit/
 
 # Zip up the lambda deployment package
 rm -f dx_wes.zip
