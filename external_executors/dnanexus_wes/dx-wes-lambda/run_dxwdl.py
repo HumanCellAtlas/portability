@@ -6,7 +6,7 @@ import dxpy
 
 # Two pieces of metadata we can use to tell if this applet is already built and
 # available on dnanexus.
-APPLET_VERSION = "0.0.18"
+APPLET_VERSION = "0.0.19"
 APPLET_NAME = "wes_dxwdl_runner"
 
 # The code for the applet itself. This downloads dxWDL, replaces remote URLs
@@ -45,19 +45,20 @@ def main(workflow_descriptor, workflow_params, wes_id, project, workflow_depende
         proc = subprocess.Popen(unzip_cmd)
         proc.communicate()
 
-    download_dxwdl_cmd = ["wget", "-q", "https://github.com/dnanexus/dxWDL/releases/download/0.66.1/dxWDL-0.66.1.jar"]
+    download_dxwdl_cmd = ["wget", "-q", "https://github.com/dnanexus/dxWDL/releases/download/0.68.1/dxWDL-0.68.1.jar"]
     proc = subprocess.Popen(download_dxwdl_cmd)
     proc.communicate()
 
     dxpy.set_project_context(project)
-    dxwdl_cmd = ["java", "-jar", "dxWDL-0.66.1.jar", "compile", "workflow.wdl",
-                 "-inputs", "dx_inputs.json", "-destination", "/" + wes_id]
+    dxwdl_cmd = ["java", "-jar", "dxWDL-0.68.1.jar", "compile", "workflow.wdl",
+                 "-inputs", "dx_inputs.json", "-destination", project + ":/" + wes_id]
     if workflow_dependencies:
         dxwdl_cmd.extend(["-imports", "wdl_dependencies"])
 
     env = os.environ.copy()
     env["DX_WORKSPACE_ID"] = project
     env["DX_PROJECT_CONTEXT_ID"] = project
+    print "Running command: {}".format(dxwdl_cmd)
     proc = subprocess.Popen(
         dxwdl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         env=env
@@ -67,11 +68,16 @@ def main(workflow_descriptor, workflow_params, wes_id, project, workflow_depende
     print stderr
 
     dx_workflow_id = stdout.strip()
+    print "Got workflow id: {}".format(dx_workflow_id)
 
     dx_workflow = dxpy.DXWorkflow(dx_workflow_id)
+    print dx_workflow.describe()
+
     dx_inputs = json.load(open("dx_inputs.dx.json"))
+    print dx_inputs
 
     dx_analysis = dx_workflow.run(dx_inputs)
+    print dx_analysis.describe()
 """
 
 def run_dxwdl(workflow_descriptor, workflow_params, wes_id,
