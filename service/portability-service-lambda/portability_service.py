@@ -145,7 +145,7 @@ def wes_submit(environment_id, wdl, params, dependency_wdls):
         post_data["workflow_dependencies"] = b64_encoded_dependencies.decode()
 
     if key_values != "none":
-        post_data["key_values"] = json.loads(key_values)
+        post_data["key_values"] = key_values
 
     wes_response = requests.post(workflows_url, headers=headers, json=post_data)
 
@@ -338,15 +338,15 @@ def portability_tests_get_status(event, context):
         # Now we have a WES status. We'll translate it a bit to a portability
         # test status. We'll put a hopeful spin on the non-terminal statuses:
         wes_to_port = {
-            "Unknown": EnvironmentEvent.JOB_RUNNING,
-            "Queued": EnvironmentEvent.JOB_RUNNING,
-            "Paused": EnvironmentEvent.JOB_RUNNING,
-            "Running": EnvironmentEvent.JOB_RUNNING,
-            "Complete": EnvironmentEvent.JOB_SUCCEEDED,
-            "Error": EnvironmentEvent.JOB_FAILED,
-            "SystemError": EnvironmentEvent.JOB_FAILED,
-            "Canceled": EnvironmentEvent.JOB_FAILED,
-            "Initializing": EnvironmentEvent.JOB_RUNNING}
+            "UNKNOWN": EnvironmentEvent.JOB_RUNNING,
+            "QUEUED": EnvironmentEvent.JOB_RUNNING,
+            "PAUSED": EnvironmentEvent.JOB_RUNNING,
+            "RUNNING": EnvironmentEvent.JOB_RUNNING,
+            "COMPLETE": EnvironmentEvent.JOB_SUCCEEDED,
+            "EXECUTOR_ERROR": EnvironmentEvent.JOB_FAILED,
+            "SYSTEM_ERROR": EnvironmentEvent.JOB_FAILED,
+            "CANCELED": EnvironmentEvent.JOB_FAILED,
+            "INITIALIZING": EnvironmentEvent.JOB_RUNNING}
 
         test_status = wes_to_port[status]
 

@@ -412,15 +412,15 @@ def wes_state_from_db_items(db_items):
     events = {k["EventType"] for k in db_items}
 
     if "Succeeded" in events:
-        return "Complete"
+        return "COMPLETE"
     elif "Failed" in events:
-        return "Error"
+        return "EXECUTOR_ERROR"
     elif "Started" in events:
-        return "Running"
+        return "RUNNING"
     elif "Initializing" in events:
-        return "Initializing"
+        return "INITIALIZING"
 
-    return "Unknown"
+    return "UNKNOWN"
 
 
 def workflow_status(event, context):
