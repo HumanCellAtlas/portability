@@ -1,0 +1,429 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Service that runs WDLs on a single EC2 instance using cromwell with a
+  local backend.
+Parameters:
+  LambdaCodeBucket:
+    Type: String
+    Description: S3 bucket with zip files containing code for the lambda functions.
+  LambdaCodeKey:
+    Type: String
+    Description: Path within the Lambda code S3 bucket to the zip file with the handlers
+      for /workflows endpoints.
+  InstanceType:
+    Type: String
+    Description: Instance type used for running Cromwell.
+    Default: t2.medium
+    AllowedValues:
+    - t2.small
+    - t2.medium
+    - t2.large
+    - r4.large
+    - r4.xlarge
+  VolumeSize:
+    Type: Number
+    Description: Size in GBs of disk for instance running Cromwell
+    Default: '25'
+    MinValue: 8
+    MaxValue: 250
+  SwaggerPath:
+    Type: String
+    Description: Path to WES swagger
+Resources:
+  ############################################################################
+  # Set up a VPC in which the cromwell instances will run. Keep them segregated
+  # from the default VPC because who knows what these things are going to do.
+  ############################################################################
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 172.31.0.0/16
+      Tags:
+      - Key: Name
+        Value: !Join ["-", [ !Ref "AWS::StackName", vpc ] ]
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+  IGAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: true
+      CidrBlock: 172.31.0.0/20
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+      RouteTableId: !Ref PublicRouteTable
+    DependsOn: InternetGateway
+  PublicRouteTableSubnetAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref Subnet
+
+  ############################################################################
+  # Create the table that tracks workflow state
+  ############################################################################
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Join [ "-", [ !Ref "AWS::StackName", "state-table" ] ]
+      AttributeDefinitions:
+        - AttributeName: RunId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: RunId
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 3
+        WriteCapacityUnits: 3
+  TimingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Join [ "-", [ !Ref "AWS::StackName", "timing-table" ] ]
+      AttributeDefinitions:
+        - AttributeName: RunId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: RunId
+          KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 3
+        WriteCapacityUnits: 3
+  ############################################################################
+  # Create a bucket for the logs
+  ############################################################################
+  Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Join ["-", [ !Ref "AWS::StackName", "logs" ] ]
+      LifecycleConfiguration:
+        Rules:
+          - ExpirationInDays: 28
+            Status: Enabled
+
+  ############################################################################
+  # Create roles for lambdas and the EC2 instances
+  ############################################################################
+  LambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join [ "-", [ !Ref "AWS::StackName", "lambda-role" ] ]
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+  LambdaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join [ "-", [ !Ref "AWS::StackName", "lambda-policy" ] ]
+      Roles:
+        - !Ref LambdaRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: "arn:aws:logs:*:*:*"
+          - Effect: Allow
+            Action:
+              - ec2:DescribeInstances
+              - ec2:DescribeTags
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ec2:RunInstances
+              - ec2:CreateTags
+              - ec2:TerminateInstances
+            Resource:
+              - !Join [ "", ["arn:aws:ec2:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":subnet/", !Ref Subnet] ]
+              - arn:aws:ec2:*:*:key-pair/*
+              - arn:aws:ec2:*:*:instance/*
+              - arn:aws:ec2:*:*:snapshot/*
+              - arn:aws:ec2:*:*:launch_template/*
+              - arn:aws:ec2:*:*:volume/*
+              - arn:aws:ec2:*:*:security-group/*
+              - arn:aws:ec2:*:*:placement-group/*
+              - arn:aws:ec2:*:*:network-interface/*
+              - arn:aws:ec2:*::image/*
+          - Effect: Allow
+            Action: "iam:PassRole"
+            Resource: !GetAtt EC2CromwellRole.Arn
+          - Effect: Allow
+            Action: 
+              - dynamodb:Query
+              - dynamodb:Scan
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource:
+              - !GetAtt StateTable.Arn
+              - !GetAtt TimingTable.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Join ["/", [ !GetAtt Bucket.Arn, "*" ] ]
+  EC2CromwellRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Join [ "-", [ !Ref "AWS::StackName", "cromwell-worker-role" ] ]
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Path: "/"
+  CromwellWorkerPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Join [ "-", [ !Ref "AWS::StackName", "cromwell-worker-policy" ] ]
+      Roles:
+        - !Ref EC2CromwellRole
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:BatchWriteItem
+              - dynamodb:PutItem
+              - dynamodb:GetItem
+              - dynamodb:Scan
+              - dynamodb:Query
+              - dynamodb:UpdateItem
+              - dynamodb:UpdateTable
+              - dynamodb:GetRecords
+            Resource:
+              - !GetAtt StateTable.Arn
+              - !GetAtt TimingTable.Arn
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Resource:
+              - !GetAtt Bucket.Arn
+              - !Join ["/", [ !GetAtt Bucket.Arn, "*" ] ]
+  EC2CromwellProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Join [ "-", [ !Ref "AWS::StackName", "cromwell-worker-profile" ] ]
+      Path: "/"
+      Roles:
+        - !Ref EC2CromwellRole
+
+  ############################################################################
+  # Import the WES API swagger document and deploy the API with a key
+  ############################################################################
+  WESApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Join ["-", [ !Ref "AWS::StackName", "api" ] ]
+      Description: WES API for local cromwell
+      Parameters:
+        basepath: prepend 
+      Body:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: !Ref SwaggerPath
+  WESApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref WESApi
+      StageName: basel
+  WESApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: !Join [ "-", [ !Ref "AWS::StackName", "api-key" ] ]
+      Enabled: true
+  WESApiUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      ApiStages:
+        - ApiId: !Ref WESApi
+          Stage: basel
+      UsagePlanName: !Join [ "-", [ !Ref "AWS::StackName", "usage-plan" ] ]
+    DependsOn: WESApiDeployment
+  WESApiUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref WESApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref WESApiUsagePlan
+
+
+  ############################################################################
+  # Lambda functions
+  ############################################################################
+  RunsPostFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Handles POST to /runs
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      FunctionName: !Join [ "-", [ !Ref "AWS::StackName", "runs-post" ] ]
+      Handler: local_cromwell.wes_runs_post
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.6"
+      Timeout: 29
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref StateTable
+          TIMING_TABLE: !Ref TimingTable
+          IAM_PROFILE: !GetAtt EC2CromwellProfile.Arn
+          INSTANCE_TYPE: !Ref InstanceType
+          BUCKET: !Ref Bucket
+          REGION: !Ref "AWS::Region"
+          SUBNET: !Ref Subnet
+          VOLUME_SIZE: !Ref VolumeSize
+  RunsGetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Handles GET to /runs
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      FunctionName: !Join [ "-", [ !Ref "AWS::StackName", "runs-get" ] ]
+      Handler: local_cromwell.wes_runs_get
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.6"
+      Timeout: 29
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref StateTable
+          REGION: !Ref "AWS::Region"
+  RunsRunIdDeleteFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Handles DELETE to /runs/{run_id}
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      FunctionName: !Join [ "-", [ !Ref "AWS::StackName", "runs-runid-delete" ] ]
+      Handler: local_cromwell.wes_runs_runid_delete
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.6"
+      Timeout: 29
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref StateTable
+          TIMING_TABLE: !Ref TimingTable
+          REGION: !Ref "AWS::Region"
+  RunsRunIdGetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Handles GET to /runs/{run_id}
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      FunctionName: !Join [ "-", [ !Ref "AWS::StackName", "runs-runid-get" ] ]
+      Handler: local_cromwell.wes_runs_runid_get
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.6"
+      Timeout: 29
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref StateTable
+          TIMING_TABLE: !Ref TimingTable
+          REGION: !Ref "AWS::Region"
+          BUCKET: !Ref Bucket
+  RunsRunIdStatusGetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Handles GET to /runs/{run_id}/status
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      FunctionName: !Join [ "-", [ !Ref "AWS::StackName", "runs-runid-status-get" ] ]
+      Handler: local_cromwell.wes_runs_runid_status_get
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.6"
+      Timeout: 29
+      Environment:
+        Variables:
+          STATE_TABLE: !Ref StateTable
+          REGION: !Ref "AWS::Region"
+  ServiceInfoGetFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Description: Handles GET to /service-info
+      Code:
+        S3Bucket: !Ref LambdaCodeBucket
+        S3Key: !Ref LambdaCodeKey
+      FunctionName: !Join [ "-", [ !Ref "AWS::StackName", "service-info-get" ] ]
+      Handler: local_cromwell.wes_service_info_get
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: "python3.6"
+      Timeout: 29
+
+  ############################################################################
+  # Lambda permissions
+  ############################################################################
+  RunsPostPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt RunsPostFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join ["", ["arn:aws:execute-api:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":", !Ref WESApi, "/*/POST/ga4gh/wes/v1/runs" ] ]
+  RunsGetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt RunsGetFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join ["", ["arn:aws:execute-api:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":", !Ref WESApi, "/*/GET/ga4gh/wes/v1/runs" ] ]
+  RunsRunIdGetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt RunsRunIdGetFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join ["", ["arn:aws:execute-api:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":", !Ref WESApi, "/*/GET/ga4gh/wes/v1/runs/*" ] ]
+  RunsRunIdDeletePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt RunsRunIdDeleteFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join ["", ["arn:aws:execute-api:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":", !Ref WESApi, "/*/DELETE/ga4gh/wes/v1/runs/*" ] ]
+  RunsRunIdStatusGetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt RunsRunIdStatusGetFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join ["", ["arn:aws:execute-api:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":", !Ref WESApi, "/*/GET/ga4gh/wes/v1/runs/*/status" ] ]
+  ServiceInfoGetPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !GetAtt ServiceInfoGetFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Join ["", ["arn:aws:execute-api:", !Ref "AWS::Region", ":", !Ref "AWS::AccountId", ":", !Ref WESApi, "/*/GET/ga4gh/wes/v1/service-info" ] ]
