@@ -56,7 +56,8 @@ def decode_runs_post_form(event):
     """
 
     # Decode the form data
-    decoder = MultipartDecoder(event["body"].encode(), event["headers"]["Content-Type"])
+    content_type = event["headers"].get("Content-Type") or event["headers"].get("content-type")
+    decoder = MultipartDecoder(event["body"].encode(), content_type)
     decoded_body = {}
 
     for part in decoder.parts:
@@ -107,7 +108,7 @@ def wes_runs_post(event, context):
 
 
     # Serialize workflow request to S3
-    for filename, file_contents in decoded_body["workflow_attachment"].items():
+    for filename, file_contents in decoded_body.get("workflow_attachment", {}).items():
         if filename == decoded_body["workflow_url"]:
             attachment_type = "entrypoint"
         else:
