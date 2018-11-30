@@ -160,6 +160,16 @@ def wes_status(environment_id, run_id):
 
     return wes_response.json()["state"]
 
+def wes_run_info(environment_id, run_id):
+    ddb_response = environments_table().query(
+        KeyConditionExpression=Key("EnvironmentId").eq(environment_id)
+    )
+    base_url = ddb_response["Items"][0]["Url"]
+    status_url = os.path.join(base_url, "runs", run_id)
+    headers = ddb_response["Items"][0]["Headers"]
+
+    wes_response = requests.get(status_url, headers=headers)
+
     return wes_response.json()
 
 def environments_post(event, context):
@@ -371,3 +381,44 @@ def portability_tests_get_status(event, context):
     return {"state": overall_status.value,
             "environment_statuses": stringified_statuses
            }
+
+def portability_tests_get(event, context):
+    """Handle GET to /portability_tests/{test_id}"""
+
+    # Get all the db entries for a submission to an environment for this test
+    response = tests_table().query(
+        KeyConditionExpression=Key("TestId").eq(event["test_id"])
+    )
+    items = response["Items"]
+
+    # 404 if we don't find anything
+    if not items:
+        error_dict = {
+            "errorType": "NotFound",
+            "httpStatus": "404",
+            "requestId": context.aws_request_id,
+            "message": "Test {} was not found".format(event["test_id"])
+        }
+
+        raise Exception(json.dumps(error_dict))
+
+    # This is a set of all the environments to which the test workflow
+    # descriptor was submitted.
+    submitted_environment_ids = set([
+        i["EnvironmentId"] for i in items
+        if EnvironmentEvent(i["EventType"]) in (
+            EnvironmentEvent.SUBMISSION_SUCCEEDED, EnvironmentEvent.SUBMISSION_FAILED
+            )])
+
+    environment_run_infos = {}
+
+    for environment_id in submitted_environment_ids:
+        all_env_events = [i for i in items if i["EnvironmentId"] == environment_id]
+        run_id = [
+            k for k in all_env_events
+            if k["EventType"] == EnvironmentEvent.SUBMISSION_SUCCEEDED.value][0]["Message"]
+        run_info = wes_run_info(environment_id, run_id)
+        environment_run_infos[environment_id] = run_info
+
+
+    return {"environment_run_infos": environment_run_infos}
