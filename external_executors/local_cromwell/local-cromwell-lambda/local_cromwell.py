@@ -206,7 +206,7 @@ def wes_service_info_get(event, context):
             "https"
         ],
         "workflow_engine_versions": {
-            "cromwell": "34"
+            "cromwell": "36"
         },
         "system_state_counts": {},
         "auth_instructions_url": "docs.aws.amazon.com", # Good luck!
