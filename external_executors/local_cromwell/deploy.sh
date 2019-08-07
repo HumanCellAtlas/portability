@@ -21,8 +21,8 @@ response=$($AWS cloudformation create-change-set --stack-name "$1" \
     --template-body file://local_cromwell_template.yaml \
     --parameters ParameterKey=LambdaCodeBucket,ParameterValue="$2" \
                  ParameterKey=LambdaCodeKey,ParameterValue=local_cromwell.zip \
-                 ParameterKey=InstanceType,ParameterValue=r4.xlarge \
-                 ParameterKey=VolumeSize,ParameterValue=40 \
+                 ParameterKey=InstanceType,ParameterValue=r5.2xlarge \
+                 ParameterKey=VolumeSize,ParameterValue=100 \
                  ParameterKey=SwaggerPath,ParameterValue=s3://"$2"/workflow_execution_service.swagger.yaml \
     --capabilities CAPABILITY_NAMED_IAM)
 sleep 20

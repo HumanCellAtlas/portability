@@ -19,6 +19,7 @@ Parameters:
     - t2.large
     - r4.large
     - r4.xlarge
+    - r5.2xlarge
   VolumeSize:
     Type: Number
     Description: Size in GBs of disk for instance running Cromwell
