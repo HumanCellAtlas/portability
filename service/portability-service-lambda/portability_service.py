@@ -1,14 +1,11 @@
 """Service to run workflows in different environments, demonstrating their
 portability.
 """
-import base64
 import datetime
 import enum
-import io
 import json
 import os
 import uuid
-import zipfile
 
 import boto3
 from boto3.dynamodb.conditions import Key
@@ -107,7 +104,7 @@ def record_test_event(test_id, environment_id, environment_event, message=None):
     )
 
 
-def wes_submit(environment_id, wdl, params, dependency_wdls):
+def wes_submit(environment_id, entry_point_wdl, workflow_params, workflow_attachment):
     """Submit a workflow to an endpoint using the WES schema."""
 
     # First get the WES endpoint to submit to
@@ -115,61 +112,65 @@ def wes_submit(environment_id, wdl, params, dependency_wdls):
         KeyConditionExpression=Key("EnvironmentId").eq(environment_id)
     )
     base_url = ddb_response["Items"][0]["Url"]
-    workflows_url = os.path.join(base_url, "workflows")
+    runs_url = os.path.join(base_url, "runs")
     headers = ddb_response["Items"][0]["Headers"]
     key_values = ddb_response["Items"][0]["KeyValues"]
 
-    # Then convert any dependency WDLs into a base64-encoded ZIP file.
-    # Taken mostly from here:
-    # https://github.com/broadinstitute/cromwell-tools/blob/2a3a803929fc6077b35029860f0e510c018f498d/cromwell_tools/cromwell_tools.py#L160-L177
-    if dependency_wdls:
-        buf = io.BytesIO()
-        zip_buffer = zipfile.ZipFile(buf, 'w')
-        for dependency_wdl in dependency_wdls:
-            zip_buffer.writestr(
-                dependency_wdl["name"],
-                dependency_wdl["code"]
-            )
+    post_kwargs = {}
 
-        zip_buffer.close()
+    wes_workflow_attachment = []
 
-        b64_encoded_dependencies = base64.b64encode(buf.getvalue())
-    else:
-        b64_encoded_dependencies = None
+    for attachment in workflow_attachment:
+        wdl_name, wdl_contents = attachment
+        wes_workflow_attachment.append(
+            ("workflow_attachment", (wdl_name, wdl_contents))
+        )
+    post_kwargs["files"] = wes_workflow_attachment
+
 
     post_data = {
-        "workflow_descriptor": wdl,
-        "workflow_params": params,
+        "workflow_params": workflow_params,
+        "workflow_url": entry_point_wdl,
+        "workflow_type": "WES",
+        "workflow_type_version": "1.0",
+        "tags": key_values
     }
-    if b64_encoded_dependencies:
-        post_data["workflow_dependencies"] = b64_encoded_dependencies.decode()
+    post_kwargs["data"] = post_data
 
-    if key_values != "none":
-        post_data["key_values"] = json.loads(key_values)
-
-    wes_response = requests.post(workflows_url, headers=headers, json=post_data)
+    wes_response = requests.post(runs_url, headers=headers, **post_kwargs)
 
     # This raises an exception for any error responses
     wes_response.raise_for_status()
 
     # Parse the json response to get the workflow Id
-    return json.loads(wes_response.text)["workflow_id"]
+    return json.loads(wes_response.text)["run_id"]
 
 
-def wes_status(environment_id, workflow_id):
+def wes_status(environment_id, run_id):
     """Request a workflow status using WES."""
     ddb_response = environments_table().query(
         KeyConditionExpression=Key("EnvironmentId").eq(environment_id)
     )
     base_url = ddb_response["Items"][0]["Url"]
-    status_url = os.path.join(base_url, "workflows", workflow_id, "status")
+    status_url = os.path.join(base_url, "runs", run_id, "status")
     headers = ddb_response["Items"][0]["Headers"]
 
     wes_response = requests.get(status_url, headers=headers)
     wes_response.raise_for_status()
 
-    return json.loads(wes_response.text)["state"]
+    return wes_response.json()["state"]
 
+def wes_run_info(environment_id, run_id):
+    ddb_response = environments_table().query(
+        KeyConditionExpression=Key("EnvironmentId").eq(environment_id)
+    )
+    base_url = ddb_response["Items"][0]["Url"]
+    status_url = os.path.join(base_url, "runs", run_id)
+    headers = ddb_response["Items"][0]["Headers"]
+
+    wes_response = requests.get(status_url, headers=headers)
+
+    return wes_response.json()
 
 def environments_post(event, context):
     """Handle POST to /environments by registering a new external execution environment.
@@ -222,19 +223,20 @@ def portability_tests_post(event, context):
     environments.
 
     event is a dict that should have keys
-        - workflow_descriptor (string)
+        - entry_point_wdl (string)
             The main WDL file to be executed
         - workflow_params (string)
             JSON string of inputs to the main WDL
-        - workflow_dependencies (list of strings)
-            List of WDL strings for dependency WDLs
+        - workflow_attachment (list of tuples)
+            The workflow WDLs.
     """
 
     # Read all the registered environments so we can iterate over them
     all_environments = environments_table().scan()["Items"]
 
-    wdl = event["workflow_descriptor"]
-    params = event["workflow_params"]
+    entry_point_wdl = event["entry_point_wdl"]
+    workflow_params = event["workflow_params"]
+    workflow_attachment = event["workflow_attachment"]
 
     test_id = str(uuid.uuid4())
 
@@ -242,10 +244,10 @@ def portability_tests_post(event, context):
         env_id = environment["EnvironmentId"]
 
         try:
-            workflow_id = wes_submit(
-                env_id, wdl, params, event.get("workflow_dependencies"))
+            run_id = wes_submit(
+                env_id, entry_point_wdl, workflow_params, workflow_attachment)
             record_test_event(test_id, env_id, EnvironmentEvent.SUBMISSION_SUCCEEDED,
-                              workflow_id)
+                              run_id)
         except Exception as e:
             record_test_event(test_id, env_id, EnvironmentEvent.SUBMISSION_FAILED, str(e))
 
@@ -288,7 +290,7 @@ def portability_tests_get_status(event, context):
 
         # First check if the submission failed
         if EnvironmentEvent.SUBMISSION_FAILED in event_types:
-            env_status = {"environment_id": environment_id, "workflow_id": None,
+            env_status = {"environment_id": environment_id, "run_id": None,
                           "state": EnvironmentEvent.SUBMISSION_FAILED}
             environment_statuses.append(env_status)
             continue
@@ -307,9 +309,9 @@ def portability_tests_get_status(event, context):
             raise Exception(json.dumps(error_dict))
 
         # Okay great, the submission was successful, and we recorded an event
-        # for that. So not we can retrieve the workflow_id the remote
+        # for that. So not we can retrieve the run_id the remote
         # environment gave us when we submitted it
-        workflow_id = [
+        run_id = [
             k for k in all_env_events
             if k["EventType"] == EnvironmentEvent.SUBMISSION_SUCCEEDED.value][0]["Message"]
 
@@ -319,13 +321,13 @@ def portability_tests_get_status(event, context):
         # failed. If this is true, we don't need to make another request to the
         # remote environment.
         if EnvironmentEvent.JOB_FAILED in event_types:
-            env_status = {"environment_id": environment_id, "workflow_id": workflow_id,
+            env_status = {"environment_id": environment_id, "run_id": run_id,
                           "state": EnvironmentEvent.JOB_FAILED}
             environment_statuses.append(env_status)
             continue
 
         if EnvironmentEvent.JOB_SUCCEEDED in event_types:
-            env_status = {"environment_id": environment_id, "workflow_id": workflow_id,
+            env_status = {"environment_id": environment_id, "run_id": run_id,
                           "state": EnvironmentEvent.JOB_SUCCEEDED}
             environment_statuses.append(env_status)
             continue
@@ -333,24 +335,24 @@ def portability_tests_get_status(event, context):
         # Well we've made it here. That means the submission to the remote
         # environment succeeded, but we don't yet know how it turned out. So
         # we're going to have to ask. We'll use WES to do that.
-        status = wes_status(environment_id, workflow_id)
+        status = wes_status(environment_id, run_id)
 
         # Now we have a WES status. We'll translate it a bit to a portability
         # test status. We'll put a hopeful spin on the non-terminal statuses:
         wes_to_port = {
-            "Unknown": EnvironmentEvent.JOB_RUNNING,
-            "Queued": EnvironmentEvent.JOB_RUNNING,
-            "Paused": EnvironmentEvent.JOB_RUNNING,
-            "Running": EnvironmentEvent.JOB_RUNNING,
-            "Complete": EnvironmentEvent.JOB_SUCCEEDED,
-            "Error": EnvironmentEvent.JOB_FAILED,
-            "SystemError": EnvironmentEvent.JOB_FAILED,
-            "Canceled": EnvironmentEvent.JOB_FAILED,
-            "Initializing": EnvironmentEvent.JOB_RUNNING}
+            "UNKNOWN": EnvironmentEvent.JOB_RUNNING,
+            "QUEUED": EnvironmentEvent.JOB_RUNNING,
+            "PAUSED": EnvironmentEvent.JOB_RUNNING,
+            "RUNNING": EnvironmentEvent.JOB_RUNNING,
+            "COMPLETE": EnvironmentEvent.JOB_SUCCEEDED,
+            "EXECUTOR_ERROR": EnvironmentEvent.JOB_FAILED,
+            "SYSTEM_ERROR": EnvironmentEvent.JOB_FAILED,
+            "CANCELED": EnvironmentEvent.JOB_FAILED,
+            "INITIALIZING": EnvironmentEvent.JOB_RUNNING}
 
         test_status = wes_to_port[status]
 
-        env_status = {"environment_id": environment_id, "workflow_id": workflow_id,
+        env_status = {"environment_id": environment_id, "run_id": run_id,
                       "state": test_status}
         environment_statuses.append(env_status)
 
@@ -379,3 +381,44 @@ def portability_tests_get_status(event, context):
     return {"state": overall_status.value,
             "environment_statuses": stringified_statuses
            }
+
+def portability_tests_get(event, context):
+    """Handle GET to /portability_tests/{test_id}"""
+
+    # Get all the db entries for a submission to an environment for this test
+    response = tests_table().query(
+        KeyConditionExpression=Key("TestId").eq(event["test_id"])
+    )
+    items = response["Items"]
+
+    # 404 if we don't find anything
+    if not items:
+        error_dict = {
+            "errorType": "NotFound",
+            "httpStatus": "404",
+            "requestId": context.aws_request_id,
+            "message": "Test {} was not found".format(event["test_id"])
+        }
+
+        raise Exception(json.dumps(error_dict))
+
+    # This is a set of all the environments to which the test workflow
+    # descriptor was submitted.
+    submitted_environment_ids = set([
+        i["EnvironmentId"] for i in items
+        if EnvironmentEvent(i["EventType"]) in (
+            EnvironmentEvent.SUBMISSION_SUCCEEDED, EnvironmentEvent.SUBMISSION_FAILED
+            )])
+
+    environment_run_infos = {}
+
+    for environment_id in submitted_environment_ids:
+        all_env_events = [i for i in items if i["EnvironmentId"] == environment_id]
+        run_id = [
+            k for k in all_env_events
+            if k["EventType"] == EnvironmentEvent.SUBMISSION_SUCCEEDED.value][0]["Message"]
+        run_info = wes_run_info(environment_id, run_id)
+        environment_run_infos[environment_id] = run_info
+
+
+    return {"environment_run_infos": environment_run_infos}

@@ -218,6 +218,28 @@
                 "Timeout": 30
             }
         },
+        "TestsGetFunction": {
+            "Type": "AWS::Lambda::Function",
+            "Properties": {
+                "Description": "Handles GET to /portability_tests/{test_id} by retrieving run info from registered environments.",
+                "Code": {
+                    "S3Bucket": {"Ref": "LambdaCodeBucket"},
+                    "S3Key": {"Ref": "LambdaCodeKey"}
+                },
+                "Environment": {
+                    "Variables": {
+                        "ENVIRONMENTS_TABLE": {"Ref": "EnvironmentsTable"},
+                        "TESTS_TABLE": {"Ref": "TestsTable"},
+                        "REGION": {"Ref": "AWS::Region"}
+                    }
+                },
+                "FunctionName": {"Fn::Join": ["-", [{"Ref": "AWS::StackName"}, "tests-get-fn"]]},
+                "Handler": "portability_service.portability_tests_get",
+                "Role": {"Fn::GetAtt": ["LambdaRole", "Arn"]},
+                "Runtime": "python3.6",
+                "Timeout": 30
+            }
+        },
         "PortabilityApi": {
             "Type": "AWS::ApiGateway::RestApi",
             "Properties": {
@@ -478,6 +500,75 @@
                                 }
                             }
                         },
+                        "/portability_tests/{test_id}": {
+                            "get": {
+                                "security": [{
+                                    "api_key": []
+                                }],
+                                "parameters": [{
+                                    "name": "test_id",
+                                    "in": "path",
+                                    "required": true,
+                                    "type": "string"
+                                }],
+                                "responses": {
+                                    "200": {
+                                        "description": "Success",
+                                        "schema": {
+                                            "type": "object"
+                                        }
+                                    },
+                                    "404": {
+                                        "description": "Workflow not found",
+                                        "schema": {
+                                            "$ref": "#/definitions/Error"
+                                        }
+                                    },
+                                    "500": {
+                                        "description": "Unhandled submission Error",
+                                        "schema": {
+                                            "$ref": "#/definitions/Error"
+                                        }
+                                    }
+                                },
+                                "x-amazon-apigateway-integration": {
+                                    "type": "aws",
+                                    "uri": {"Fn::Join": [
+                                        "",
+                                        [
+                                            "arn:aws:apigateway:",
+                                            {"Ref": "AWS::Region"},
+                                            ":lambda:path",
+                                            "/2015-03-31/functions/",
+                                            {"Fn::GetAtt": ["TestsGetFunction", "Arn"]},
+                                            "/invocations"
+                                        ]
+                                    ]},
+                                    "httpMethod": "POST",
+                                    "passthroughBehavior": "when_no_match",
+                                    "requestTemplates": {
+                                        "application/json": "{\"test_id\": \"$input.params('test_id')\"}"
+                                    },
+                                    "responses": {
+                                        "default": {
+                                            "statusCode": "200"
+                                        },
+                                        ".*httpStatus.*404.*": {
+                                            "statusCode": "404",
+                                            "responseTemplates": {
+                                                "application/json": "#set ($errorMessageObj = $util.parseJson($input.path('$.errorMessage')))\n#set ($bodyObj = $util.parseJson($input.body))\n{\n  \"type\" : \"$errorMessageObj.errorType\",\n  \"message\" : \"$errorMessageObj.message\",\n  \"request-id\" : \"$errorMessageObj.requestId\"\n}"
+                                            }
+                                        },
+                                        ".*httpStatus.*500.*": {
+                                            "statusCode": "500",
+                                            "responseTemplates": {
+                                                "application/json": "#set ($errorMessageObj = $util.parseJson($input.path('$.errorMessage')))\n#set ($bodyObj = $util.parseJson($input.body))\n{\n  \"type\" : \"$errorMessageObj.errorType\",\n  \"message\" : \"$errorMessageObj.message\",\n  \"request-id\" : \"$errorMessageObj.requestId\"\n}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
                         "/portability_tests/{test_id}/status": {
                             "get": {
                                 "security": [{
@@ -620,6 +711,23 @@
                     ":",
                     {"Ref": "PortabilityApi"},
                     "/*/GET/portability_tests/*/status"
+                    ]]}
+            }
+        },
+        "TestsGetPermission": {
+            "Type": "AWS::Lambda::Permission",
+            "Properties": {
+                "Action": "lambda:InvokeFunction",
+                "FunctionName": {"Fn::GetAtt": ["TestsGetFunction", "Arn"]},
+                "Principal": "apigateway.amazonaws.com",
+                "SourceArn": {"Fn::Join": ["", [
+                    "arn:aws:execute-api:",
+                    {"Ref": "AWS::Region"},
+                    ":",
+                    {"Ref": "AWS::AccountId"},
+                    ":",
+                    {"Ref": "PortabilityApi"},
+                    "/*/GET/portability_tests/*"
                     ]]}
             }
         },
